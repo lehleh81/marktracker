@@ -460,6 +460,101 @@ async function detectAndReadMark(sourceCanvas, colorName) {
 // Camera
 // ==========================================================================
 
+let liveDetectTimer = null;
+let liveHitStreak = 0;
+let captureBusy = false;
+let livePreviewBusy = false;
+const LIVE_CHECK_INTERVAL_MS = 180;
+const LIVE_STABLE_HITS = 4; // ~4 * 180ms ≈ 0.7s of steady detection before auto-firing
+
+function stopLiveDetection() {
+  if (liveDetectTimer) { clearInterval(liveDetectTimer); liveDetectTimer = null; }
+  liveHitStreak = 0;
+  setGuideState('idle');
+  hideLiveMarkBadge();
+}
+
+function setGuideState(state) {
+  const guide = el('alignGuide');
+  if (!guide) return;
+  guide.classList.remove('guide-hit');
+  if (state === 'hit') guide.classList.add('guide-hit');
+}
+
+function showLiveMarkBadge(text) {
+  const badge = el('liveMarkBadge');
+  if (!badge) return;
+  badge.textContent = text;
+  badge.classList.remove('hidden');
+}
+
+function hideLiveMarkBadge() {
+  const badge = el('liveMarkBadge');
+  if (badge) badge.classList.add('hidden');
+}
+
+/**
+ * Fast, low-accuracy OCR pass used only for the live on-screen preview
+ * while aiming — a single Tesseract call on the thresholded crop, no
+ * fallback variants. The real, more careful multi-variant read (runOcrOnCrop)
+ * still runs once on the frame actually captured, so accuracy of the saved
+ * mark is unaffected by this preview being quick and occasionally wrong.
+ */
+async function quickOcrPreview(cropCanvas) {
+  try {
+    const thresholded = preprocessForOcr(cropCanvas, false);
+    const { data } = await Tesseract.recognize(thresholded.toDataURL('image/png'), 'eng', {
+      tessedit_char_whitelist: '0123456789/.%',
+    });
+    return cleanOcrText(data.text);
+  } catch (e) {
+    return '';
+  }
+}
+
+function startLiveDetection() {
+  stopLiveDetection();
+  liveDetectTimer = setInterval(async () => {
+    if (!stream || captureBusy) return;
+    if (!el('autoCaptureToggle').checked) { setGuideState('idle'); hideLiveMarkBadge(); return; }
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return;
+
+    const frame = document.createElement('canvas');
+    frame.width = w; frame.height = h;
+    frame.getContext('2d').drawImage(video, 0, 0);
+
+    const colorName = el('colorSelect').value;
+    const regions = findColoredRegions(frame, colorName, 1);
+    if (regions.length) {
+      liveHitStreak++;
+      setGuideState('hit');
+
+      // Kick off a live reading preview, throttled to one in flight at a
+      // time (Tesseract calls take a few hundred ms to ~1.5s, far slower
+      // than the 180ms poll interval) so it updates as fast as it can
+      // without piling up overlapping OCR calls.
+      if (!livePreviewBusy) {
+        livePreviewBusy = true;
+        const crop = cropToCanvas(frame, regions[0]);
+        quickOcrPreview(crop).then(text => {
+          if (text) showLiveMarkBadge(text); else hideLiveMarkBadge();
+          livePreviewBusy = false;
+        });
+      }
+
+      if (liveHitStreak >= LIVE_STABLE_HITS) {
+        liveHitStreak = 0;
+        await performCapture(frame);
+      }
+    } else {
+      liveHitStreak = 0;
+      setGuideState('idle');
+      hideLiveMarkBadge();
+    }
+  }, LIVE_CHECK_INTERVAL_MS);
+}
+
 async function startCamera() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -471,6 +566,7 @@ async function startCamera() {
     el('manualSelectBtn').classList.add('hidden');
     el('camStatus').textContent = '';
     el('manualStatus').textContent = '';
+    startLiveDetection();
   } catch (err) {
     el('camStatus').textContent = 'Camera error: ' + err.message + ' (camera requires HTTPS or localhost, and permission).';
     el('camStatus').className = 'status err';
@@ -478,10 +574,23 @@ async function startCamera() {
 }
 el('startCamBtn').addEventListener('click', startCamera);
 
-el('captureBtn').addEventListener('click', async () => {
-  const raw = document.createElement('canvas');
-  raw.width = video.videoWidth; raw.height = video.videoHeight;
-  raw.getContext('2d').drawImage(video, 0, 0);
+/**
+ * Freeze a photo and run detection on it — shared by the manual shutter
+ * button and by live auto-capture once a stable coloured region is held
+ * steady in frame for LIVE_STABLE_HITS checks. `preCaptured`, if given, is
+ * the already-drawn frame from the live-detection loop (avoids re-drawing
+ * the same frame twice); otherwise it's drawn fresh from the live video.
+ */
+async function performCapture(preCaptured) {
+  if (captureBusy) return;
+  captureBusy = true;
+  stopLiveDetection();
+
+  const raw = preCaptured || document.createElement('canvas');
+  if (!preCaptured) {
+    raw.width = video.videoWidth; raw.height = video.videoHeight;
+    raw.getContext('2d').drawImage(video, 0, 0);
+  }
   capturedCanvas = raw;
 
   frameCanvas.width = raw.width; frameCanvas.height = raw.height;
@@ -489,7 +598,7 @@ el('captureBtn').addEventListener('click', async () => {
   frameCanvas.classList.remove('hidden');
   el('manualSelectBtn').classList.remove('hidden');
 
-  if (stream) { stream.getTracks().forEach(t => t.stop()); }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   el('camWrap').classList.add('hidden');
   el('startCamBtn').classList.remove('hidden');
   el('startCamBtn').textContent = '📷 Retake photo';
@@ -506,6 +615,7 @@ el('captureBtn').addEventListener('click', async () => {
     el('detectedText').textContent = '—';
     el('detectedBox').classList.remove('hidden');
     el('markInput').value = '';
+    captureBusy = false;
     return;
   }
   el('detectedText').textContent = result.text;
@@ -513,13 +623,16 @@ el('captureBtn').addEventListener('click', async () => {
   el('markInput').value = result.text;
   el('detectedBox').classList.remove('hidden');
 
-  if (await maybeAutoApprove(result)) return; // saved automatically, fields already reset
+  if (await maybeAutoApprove(result)) { captureBusy = false; return; } // saved automatically, fields already reset
 
   el('camStatus').textContent = result.confidence >= AUTO_APPROVE_MIN_CONFIDENCE
     ? 'Mark detected. Confirm or edit below.'
     : 'Mark detected with low confidence — please double-check it.';
   el('camStatus').className = result.confidence >= AUTO_APPROVE_MIN_CONFIDENCE ? 'status ok' : 'status err';
-});
+  captureBusy = false;
+}
+
+el('captureBtn').addEventListener('click', () => performCapture());
 
 // ---------- Manual drag-to-select fallback ----------
 let manualMode = false, dragStart = null, manualBox = null;
@@ -689,7 +802,97 @@ function renderRecords() {
       refreshRosterUI();
     });
   });
+  updateGradingProgress();
 }
+
+// ==========================================================================
+// Grading mode — collapses the normal multi-card flow into one full-screen
+// loop: pick/confirm student, snap, confirm/auto-save, repeat. It works by
+// temporarily relocating the real student-entry and capture controls (not
+// copies — the exact same DOM nodes, so every existing behaviour: roster
+// autocomplete, voice input, OCR, manual selection, auto-save keeps working
+// unchanged) into the overlay, then moving them back on exit. Comment-node
+// placeholders mark each element's original position so the move can be
+// undone precisely regardless of order.
+// ==========================================================================
+
+let gradingActive = false;
+let gradingMoved = [];
+let gradingPrevAutoNext = true;
+let gradingPrevAutoApprove = false;
+
+const GRADING_STUDENT_IDS = ['studentName', 'studentId', 'micBtn', 'micStatus', 'matchSuggestion'];
+const GRADING_CAM_IDS = ['startCamBtn', 'camWrap', 'frameCanvas', 'manualSelectBtn'];
+const GRADING_BELOW_IDS = ['camStatus', 'manualStatus', 'detectedBox'];
+
+function updateGradingProgress() {
+  const target = el('gradingProgress');
+  if (!target) return;
+  if (!roster.length) {
+    target.textContent = `${records.length} recorded`;
+    return;
+  }
+  const assessment = el('assessment').value.trim() || 'Assessment';
+  const recordedIds = new Set(records.filter(r => r.assessment === assessment).map(r => r.id));
+  const done = roster.filter(r => recordedIds.has(r.id)).length;
+  target.textContent = `${done} of ${roster.length}`;
+}
+
+function moveIntoGrading(id, target) {
+  const node = el(id);
+  const placeholder = document.createComment('grading-placeholder-' + id);
+  node.parentNode.insertBefore(placeholder, node);
+  gradingMoved.push({ node, placeholder });
+  target.appendChild(node);
+}
+
+function enterGradingMode() {
+  if (gradingActive) return;
+  gradingActive = true;
+
+  // Grading mode is meant to be hands-off, so force the two automation
+  // toggles on for its duration and restore whatever the user had set
+  // when they leave.
+  gradingPrevAutoNext = el('autoNextToggle').checked;
+  gradingPrevAutoApprove = el('autoApproveToggle').checked;
+  el('autoNextToggle').checked = true;
+  el('autoApproveToggle').checked = true;
+
+  gradingMoved = [];
+  GRADING_STUDENT_IDS.forEach(id => moveIntoGrading(id, el('gradingStudentSlot')));
+  GRADING_CAM_IDS.forEach(id => moveIntoGrading(id, el('gradingCamSlot')));
+  GRADING_BELOW_IDS.forEach(id => moveIntoGrading(id, el('gradingBelowSlot')));
+
+  el('alignGuide').classList.remove('hidden');
+  el('gradingOverlay').classList.remove('hidden');
+  updateGradingProgress();
+
+  if (roster.length && !el('studentName').value.trim()) {
+    pickNextUnrecordedStudent();
+  }
+  if (!stream) startCamera();
+}
+
+function exitGradingMode() {
+  if (!gradingActive) return;
+  gradingActive = false;
+
+  stopLiveDetection();
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  el('alignGuide').classList.add('hidden');
+
+  gradingMoved.forEach(({ node, placeholder }) => {
+    placeholder.parentNode.replaceChild(node, placeholder);
+  });
+  gradingMoved = [];
+
+  el('gradingOverlay').classList.add('hidden');
+  el('autoNextToggle').checked = gradingPrevAutoNext;
+  el('autoApproveToggle').checked = gradingPrevAutoApprove;
+}
+
+el('startGradingBtn').addEventListener('click', enterGradingMode);
+el('exitGradingBtn').addEventListener('click', exitGradingMode);
 
 function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
