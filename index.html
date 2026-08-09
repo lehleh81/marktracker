@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mark Tracker</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#5b4636">
+<style>
+  /* ---------- Cozy, low-glare warm-neutral palette ---------- */
+  :root {
+    color-scheme: light;
+    --bg: #f1e9dd;            /* warm sand background */
+    --bg-soft: #e9dfd0;       /* slightly deeper sand, for nested panels */
+    --card: #fdf9f2;          /* soft ivory card surface */
+    --border: #e4d6c1;        /* warm taupe border */
+    --text: #40342a;          /* warm charcoal-brown, softer than pure black */
+    --text-muted: #8a7a65;    /* warm muted brown-grey */
+    --header-bg: #4a3b2e;     /* espresso brown header */
+    --header-text: #f3e9da;   /* warm cream */
+    --accent: #9c5636;        /* terracotta clay — primary actions (AA on white text) */
+    --accent-dark: #82442a;   /* pressed/hover state */
+    --accent-soft: #f1ddc9;   /* soft terracotta tint for secondary/backgrounds */
+    --sage: #6f8f63;          /* muted sage — mic/success accents */
+    --sage-bg: #e9f0e2;
+    --sage-border: #c8dcbc;
+    --amber-bg: #faf1d7;      /* gentle suggestion highlight */
+    --amber-border: #e6d69f;
+    --ok: #4a6a3d;
+    --err: #ac5a3e;           /* muted rust, not harsh red */
+    --err-bg: #f6e4da;
+    --shadow: 0 2px 10px rgba(75, 58, 40, 0.08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    line-height: 1.45;
+  }
+  header {
+    background: var(--header-bg); color: var(--header-text); padding: 16px 18px;
+    display: flex; align-items: center; justify-content: space-between;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.06);
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+  main { max-width: 640px; margin: 0 auto; padding: 18px 16px; padding-bottom: 96px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px; margin-bottom: 18px; box-shadow: var(--shadow);
+  }
+  .card-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  .step-badge {
+    flex: none; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent-dark);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; margin-top: 1px;
+  }
+  .card-title { margin: 0 0 2px 0; font-size: 15px; font-weight: 700; color: var(--text); }
+  .card-sub { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #5b4a3a; }
+  input[type=text], select, textarea {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px;
+    font-size: 15px; margin-bottom: 12px; background: #fffdf8; color: var(--text); font-family: inherit;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input[type=text]:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(181, 106, 68, 0.15);
+  }
+  input[type=file] {
+    width: 100%; font-size: 13.5px; color: var(--text-muted); margin-bottom: 4px;
+  }
+  textarea { resize: vertical; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+
+  button {
+    border: none; border-radius: 9px; padding: 11px 14px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: filter .15s, transform .05s;
+    font-family: inherit;
+  }
+  button:active { transform: scale(0.98); }
+  .btn-primary { background: var(--accent); color: #fff8f2; width: 100%; }
+  .btn-primary:hover { filter: brightness(1.06); }
+  .btn-secondary { background: var(--accent-soft); color: #5b3d29; }
+  .btn-secondary:hover { filter: brightness(0.98); }
+  .btn-mic { background: var(--sage-bg); color: #3f5c37; border: 1px solid var(--sage-border); }
+  .btn-danger { background: var(--err-bg); color: #8a3f28; }
+
+  video, canvas.preview {
+    width: 100%; border-radius: 10px; background: #2a231c; display: block; touch-action: none;
+  }
+  #camWrap { position: relative; }
+  #captureBtn {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: 60px; height: 60px; border-radius: 50%; background: #fff8f2;
+    border: 4px solid var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  }
+
+  .hidden { display: none !important; }
+
+  .detected-box {
+    background: var(--accent-soft); border: 1px solid #e0c4a8; border-radius: 10px;
+    padding: 14px; margin: 14px 0; font-size: 15px; color: #4a3324;
+  }
+  .suggest-box {
+    background: var(--amber-bg); border: 1px solid var(--amber-border); border-radius: 10px;
+    padding: 10px 12px; margin-top: 8px; font-size: 13px; display: flex;
+    align-items: center; justify-content: space-between; gap: 8px; color: #5b4a1f;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-weight: 600; }
+  tr:hover td { background: rgba(181, 106, 68, 0.05); }
+
+  .muted { color: var(--text-muted); font-size: 13px; }
+  .checkbox-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 400;
+    color: #5b4a3a; margin-top: 4px;
+  }
+  .checkbox-row input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+  .status { font-size: 13px; margin-top: 8px; min-height: 18px; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+
+  details {
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+    margin-bottom: 12px; background: var(--bg-soft);
+  }
+  details[open] { padding-bottom: 14px; }
+  summary {
+    cursor: pointer; font-weight: 600; font-size: 13.5px; color: #5b4a3a;
+    list-style: none; display: flex; align-items: center; gap: 6px;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: '▸'; color: var(--accent); font-size: 12px; transition: transform .15s; }
+  details[open] summary::before { transform: rotate(90deg); }
+  details > *:not(summary) { margin-top: 10px; }
+
+  hr.soft { margin: 14px 0; border: none; border-top: 1px solid var(--border); }
+
+  footer.actionbar {
+    position: fixed; bottom: 0; left: 0; right: 0; background: var(--card);
+    border-top: 1px solid var(--border); padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    box-shadow: 0 -2px 10px rgba(75, 58, 40, 0.06);
+  }
+  .row-actions { display: flex; gap: 8px; max-width: 640px; margin: 0 auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📝 Mark Tracker</h1>
+  <span class="muted" id="countPill" style="color:#e0d3c2;">0 records</span>
+</header>
+
+<main>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="step-badge">1</span>
+      <div>
+        <p class="card-title">Test setup</p>
+        <p class="card-sub">Once per assessment — pick the ink colour and name the test.</p>
+      </div>
+    </div>
+    <label for="colorSelect">Ink colour to detect</label>
+    <select id="colorSelect">
+      <option value="red">Red</option>
+      <option value="blue">Blue</option>
+      <option value="green">Green</option>
+      <option value="purple">Purple</option>
+      <option value="orange">Orange</option>
+      <option value="black">Black</option>
+    </select>
+
+    <label for="assessment" style="margin-bottom:6px;">Assessment / test name</label>
+    <input type="text" id="assessment" placeholder="e.g. Term 1 Test" style="margin-bottom:0;">
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="step-badge">2</span>
+      <div>
+        <p class="card-title">Class roster</p>
+        <p class="card-sub">Optional, once per class — makes name/ID entry fast and accurate.</p>
+      </div>
+    </div>
+
+    <details open>
+      <summary>Import name list / marking list from Excel</summary>
+      <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv">
+      <div class="status" id="excelStatus"></div>
+
+      <div id="excelMapWrap" class="hidden" style="margin-top:8px;">
+        <label>Name column</label>
+        <select id="nameColSelect"></select>
+        <label>ID column (optional)</label>
+        <select id="idColSelect"></select>
+        <label>Mark column — existing column to fill, or add new</label>
+        <select id="markColSelect"></select>
+        <button class="btn-primary" id="confirmMapBtn" style="width:100%;">Use these columns</button>
+      </div>
+    </details>
+
+    <details>
+      <summary>…or paste a roster manually</summary>
+      <textarea id="rosterInput" rows="3" placeholder="Paste one student per line: Name, ID"></textarea>
+      <div class="row">
+        <button class="btn-secondary" id="saveRosterBtn">Save roster</button>
+        <button class="btn-secondary" id="clearRosterBtn">Clear roster / imported file</button>
+      </div>
+    </details>
+    <div class="status" id="rosterStatus"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="step-badge">3</span>
+      <div>
+        <p class="card-title">Student</p>
+        <p class="card-sub">Repeat for each student — pick, type, or speak who's up.</p>
+      </div>
+    </div>
+    <label for="rosterPicker">Pick from roster</label>
+    <select id="rosterPicker"><option value="">— select student —</option></select>
+
+    <label style="margin-top:4px;">Or enter / correct manually</label>
+    <div class="row">
+      <input type="text" id="studentName" placeholder="Name" list="rosterNamesList" autocomplete="off">
+      <input type="text" id="studentId" placeholder="ID">
+    </div>
+    <datalist id="rosterNamesList"></datalist>
+
+    <button class="btn-mic" id="micBtn" style="width:100%;">🎤 Speak name &amp; ID</button>
+    <div class="status" id="micStatus"></div>
+    <div id="matchSuggestion" class="suggest-box hidden">
+      <span>Did you mean <strong id="suggestName"></strong>?</span>
+      <button id="useSuggestionBtn" class="btn-secondary" style="padding:6px 10px;font-size:12px;">Use this</button>
+    </div>
+
+    <hr class="soft">
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="autoNextToggle" checked>
+      <label style="margin:0;font-weight:400;" for="autoNextToggle">After saving, auto-advance to the next student and reopen the camera</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="step-badge">4</span>
+      <div>
+        <p class="card-title">Capture &amp; save</p>
+        <p class="card-sub">Photograph the circled mark — it's read automatically.</p>
+      </div>
+    </div>
+
+    <div class="checkbox-row" style="margin-bottom:14px;">
+      <input type="checkbox" id="autoApproveToggle">
+      <label style="margin:0;font-weight:400;" for="autoApproveToggle">Skip review — auto-save once confidently detected (still shown briefly first)</label>
+    </div>
+
+    <div id="camWrap" class="hidden">
+      <video id="video" autoplay playsinline muted></video>
+      <button id="captureBtn"></button>
+    </div>
+    <button class="btn-secondary" id="startCamBtn" style="width:100%;">📷 Open camera</button>
+    <canvas id="frameCanvas" class="hidden preview"></canvas>
+    <button class="btn-secondary hidden" id="manualSelectBtn" style="width:100%;margin-top:8px;">🖊️ Can't find it? Drag to select the mark</button>
+    <div class="status" id="camStatus"></div>
+    <div class="status" id="manualStatus"></div>
+
+    <div id="detectedBox" class="detected-box hidden">
+      <div>Detected mark: <strong id="detectedText">—</strong> <span class="muted" id="confidenceNote"></span></div>
+      <label for="markInput" style="margin-top:10px;">Confirm / edit mark</label>
+      <input type="text" id="markInput" placeholder="e.g. 18/20" style="margin-bottom:0;">
+      <button class="btn-primary" id="saveRecordBtn" style="margin-top:12px;">Save record</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="step-badge">5</span>
+      <div>
+        <p class="card-title">Tracker</p>
+        <p class="card-sub"><span id="recCount">0</span> record(s) saved so far.</p>
+      </div>
+    </div>
+    <div style="max-height:260px; overflow:auto;">
+      <table id="recTable">
+        <thead><tr><th>Name</th><th>ID</th><th>Assessment</th><th>Mark</th><th></th></tr></thead>
+        <tbody id="recBody"></tbody>
+      </table>
+    </div>
+    <p class="muted" id="emptyMsg">No records yet.</p>
+    <p class="status ok hidden" id="exportReminder"></p>
+  </div>
+
+</main>
+
+<footer class="actionbar">
+  <div class="row-actions">
+    <button class="btn-secondary" id="clearBtn">Clear all</button>
+    <button class="btn-primary" id="exportBtn">⬇️ Export Excel</button>
+  </div>
+</footer>
+
+<!--
+  Third-party scripts: pinned to exact versions (not semver ranges) so a
+  future upstream release can't be pulled in silently. `crossorigin` is set
+  on all three so browsers report loading errors correctly and so
+  Subresource Integrity can be added.
+
+  IMPORTANT — before going live, run generate-sri.sh (in this folder) once
+  from a machine with normal internet access and paste the resulting
+  `integrity="sha384-..."` attributes onto each tag below. This sandbox's
+  network is restricted and can't fetch the raw CDN bytes needed to compute
+  those hashes, so they're intentionally left for you to generate for real.
+-->
+<!-- In-browser OCR — pinned to 5.1.1 (latest 5.x; deliberately not the current major 7.x, which is untested against this app's code) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" crossorigin="anonymous"></script>
+<!-- Excel export/import — SheetJS. 0.18.5 (used previously) is vulnerable to CVE-2023-30533
+     (prototype pollution when reading untrusted files, which this app does). Fixed in >=0.19.3,
+     which is distributed only via cdn.sheetjs.com (npm/cdnjs are frozen at the vulnerable 0.18.x line). -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
+<!-- Fuzzy name/ID matching against the roster — pinned to latest 7.x -->
+<script src="https://cdn.jsdelivr.net/npm/fuse.js@7.5.0/dist/fuse.min.js" crossorigin="anonymous"></script>
+
+<script src="app.js"></script>
+</body>
+</html>

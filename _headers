@@ -1,0 +1,16 @@
+# Security headers for static hosts that read this file (Netlify, Cloudflare
+# Pages both support the `_headers` format natively). If you're hosting
+# elsewhere (Vercel, nginx, a school web server, etc.), set the equivalent
+# headers in that platform's own config — see README.md for pointers.
+#
+# script-src / connect-src only allow the exact CDNs this app actually loads
+# from (cdn.jsdelivr.net for Tesseract.js + Fuse.js, cdn.sheetjs.com for
+# xlsx). Camera/microphone are explicitly scoped to this origin only.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' cdn.jsdelivr.net cdn.sheetjs.com; connect-src 'self' cdn.jsdelivr.net cdn.sheetjs.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(self), microphone=(self), geolocation=(), payment=(), usb=()
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
