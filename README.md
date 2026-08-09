@@ -4,68 +4,6 @@ Runs in any modern browser — iPhone/iPad (Safari), Android (Chrome), macOS,
 and Windows — from the same three files. No app store, no install step
 required, though it can be "installed" as an app icon (PWA).
 
-Files: `index.html`, `app.js`, `manifest.json`, `sw.js`, `_headers` — keep them
-together in one folder. (`SECURITY_AUDIT.md` and `generate-sri.sh` are for you,
-not needed at runtime — see "Before you deploy" below.)
-
-## Why it needs to be hosted (can't just double-click the file)
-
-Browsers only allow camera/microphone access on pages loaded over **HTTPS**,
-or on **http://localhost**. Opening `index.html` directly from disk
-(`file://...`) will block the camera. Three easy ways to serve it:
-
-### Option A — quick local test (same computer)
-```bash
-cd webapp
-python3 -m http.server 8000
-```
-Open `http://localhost:8000` in your browser. Camera/mic will work here.
-To test on your **phone**, it needs HTTPS (see Option B or C) — phones can't
-reach your computer's `localhost`.
-
-### Option B — free permanent hosting (recommended)
-Drag the `webapp` folder onto **[Netlify Drop](https://app.netlify.com/drop)**
-(no account needed for a quick link), or push it to a GitHub repo and enable
-**GitHub Pages**. You'll get an `https://...` URL that works identically on
-phone and desktop, and can be bookmarked / added to your home screen.
-
-### Option C — host on your own network
-Any static file host / web server (nginx, Vercel, Cloudflare Pages, an
-existing school web server) works — just needs HTTPS.
-
-## Before you deploy (one step)
-
-This app has been through a security audit (`SECURITY_AUDIT.md`) and every
-finding is fixed except one manual step that needs real internet access this
-build environment didn't have:
-
-```bash
-chmod +x generate-sri.sh
-./generate-sri.sh
-```
-
-This prints three `integrity="sha384-..."` values — paste each one onto the
-matching `<script src="https://cdn...">` tag near the bottom of `index.html`
-(they already have `crossorigin="anonymous"` set, just add `integrity`
-alongside it). This "pins" the exact third-party code the app loads, so a
-compromised or swapped CDN file would be rejected by the browser instead of
-running silently.
-
-`_headers` (security headers) is already included and will be picked up
-automatically if you deploy to Netlify or Cloudflare Pages. On another host,
-translate it to that platform's headers config (see `SECURITY_AUDIT.md` →
-"M5" for the exact values).
-
-## Installing as an app icon
-
-- **iOS (Safari):** open the URL → Share button → "Add to Home Screen".
-- **Android (Chrome):** open the URL → ⋮ menu → "Add to Home screen" / "Install app".
-- **macOS/Windows (Chrome/Edge):** open the URL → install icon in the address bar → "Install".
-
-Once installed it opens full-screen like a native app and keeps working
-offline for the interface itself (camera, OCR, and Excel export all run
-locally in the browser — no server, no data leaves the device).
-
 ## Using it
 
 1. Pick the ink colour marks are circled in, and type the assessment name.
