@@ -4,6 +4,36 @@ let records = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
 let roster = JSON.parse(localStorage.getItem(ROSTER_KEY) || '[]'); // [{name, id}]
 let fuse = null;
 
+// ==========================================================================
+// A single persistent Tesseract worker, reused for every OCR call.
+// Tesseract.recognize(...) (the convenience wrapper used previously) spins
+// up a brand-new worker and reloads the language model on every single
+// call — fine for one-off use, wasteful for a live preview firing every
+// couple hundred milliseconds. Creating the worker once up front and
+// reusing it for both the live preview and the final capture read cuts
+// that repeated load cost out entirely.
+// ==========================================================================
+
+let tesseractWorker = null;
+let tesseractWorkerReady = null;
+
+function getTesseractWorker() {
+  if (tesseractWorker) return Promise.resolve(tesseractWorker);
+  if (!tesseractWorkerReady) {
+    tesseractWorkerReady = Tesseract.createWorker('eng').then(async (worker) => {
+      await worker.setParameters({ tessedit_char_whitelist: '0123456789/.%' });
+      tesseractWorker = worker;
+      return worker;
+    });
+  }
+  return tesseractWorkerReady;
+}
+
+// Kick off worker creation as soon as the page loads rather than waiting
+// for the first capture, so the model is already warm by the time it's
+// needed.
+if (typeof Tesseract !== 'undefined') { getTesseractWorker().catch(() => {}); }
+
 // Excel import / write-back state (session-only — the source workbook
 // itself isn't persisted across page reloads, only the derived roster is).
 let importedWorkbook = null;
@@ -432,11 +462,10 @@ function cleanOcrText(raw) {
 async function runOcrOnCrop(cropCanvas) {
   const variants = [preprocessForOcr(cropCanvas, false), cropCanvas, preprocessForOcr(cropCanvas, true)];
   let best = { text: '', confidence: -1 };
+  const worker = await getTesseractWorker();
   for (const v of variants) {
     try {
-      const { data } = await Tesseract.recognize(v.toDataURL('image/png'), 'eng', {
-        tessedit_char_whitelist: '0123456789/.%',
-      });
+      const { data } = await worker.recognize(v.toDataURL('image/png'));
       const text = cleanOcrText(data.text);
       const conf = data.confidence || 0;
       if (text && conf > best.confidence) best = { text, confidence: conf };
@@ -461,6 +490,9 @@ async function detectAndReadMark(sourceCanvas, colorName) {
 // ==========================================================================
 
 let liveDetectTimer = null;
+let liveDetectRvfcHandle = null;
+let liveDetectRvfcHandleActive = false;
+let liveDetectLastRun = 0;
 let liveHitStreak = 0;
 let captureBusy = false;
 let livePreviewBusy = false;
@@ -469,6 +501,11 @@ const LIVE_STABLE_HITS = 4; // ~4 * 180ms ≈ 0.7s of steady detection before au
 
 function stopLiveDetection() {
   if (liveDetectTimer) { clearInterval(liveDetectTimer); liveDetectTimer = null; }
+  liveDetectRvfcHandleActive = false;
+  if (liveDetectRvfcHandle != null && video && typeof video.cancelVideoFrameCallback === 'function') {
+    video.cancelVideoFrameCallback(liveDetectRvfcHandle);
+  }
+  liveDetectRvfcHandle = null;
   liveHitStreak = 0;
   setGuideState('idle');
   hideLiveMarkBadge();
@@ -503,56 +540,92 @@ function hideLiveMarkBadge() {
 async function quickOcrPreview(cropCanvas) {
   try {
     const thresholded = preprocessForOcr(cropCanvas, false);
-    const { data } = await Tesseract.recognize(thresholded.toDataURL('image/png'), 'eng', {
-      tessedit_char_whitelist: '0123456789/.%',
-    });
+    const worker = await getTesseractWorker();
+    const { data } = await worker.recognize(thresholded.toDataURL('image/png'));
     return cleanOcrText(data.text);
   } catch (e) {
     return '';
   }
 }
 
+/**
+ * One tick of the live-detection loop: grabs the current video frame,
+ * looks for the coloured mark, updates the aim guide + live OCR badge,
+ * and auto-fires a capture once the detection has held steady for
+ * LIVE_STABLE_HITS consecutive checks. Shared by both scheduling
+ * strategies below (rVFC and the setInterval fallback) so the actual
+ * detection logic only lives in one place.
+ */
+async function runLiveDetectionCheck() {
+  if (!stream || captureBusy) return;
+  if (!el('autoCaptureToggle').checked) { setGuideState('idle'); hideLiveMarkBadge(); return; }
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return;
+
+  const frame = document.createElement('canvas');
+  frame.width = w; frame.height = h;
+  frame.getContext('2d').drawImage(video, 0, 0);
+
+  const colorName = el('colorSelect').value;
+  const regions = findColoredRegions(frame, colorName, 1);
+  if (regions.length) {
+    liveHitStreak++;
+    setGuideState('hit');
+
+    // Kick off a live reading preview, throttled to one in flight at a
+    // time (Tesseract calls take a few hundred ms to ~1.5s, far slower
+    // than the check interval) so it updates as fast as it can without
+    // piling up overlapping OCR calls.
+    if (!livePreviewBusy) {
+      livePreviewBusy = true;
+      const crop = cropToCanvas(frame, regions[0]);
+      quickOcrPreview(crop).then(text => {
+        if (text) showLiveMarkBadge(text); else hideLiveMarkBadge();
+        livePreviewBusy = false;
+      });
+    }
+
+    if (liveHitStreak >= LIVE_STABLE_HITS) {
+      liveHitStreak = 0;
+      await performCapture(frame);
+    }
+  } else {
+    liveHitStreak = 0;
+    setGuideState('idle');
+    hideLiveMarkBadge();
+  }
+}
+
 function startLiveDetection() {
   stopLiveDetection();
-  liveDetectTimer = setInterval(async () => {
-    if (!stream || captureBusy) return;
-    if (!el('autoCaptureToggle').checked) { setGuideState('idle'); hideLiveMarkBadge(); return; }
-    const w = video.videoWidth, h = video.videoHeight;
-    if (!w || !h) return;
 
-    const frame = document.createElement('canvas');
-    frame.width = w; frame.height = h;
-    frame.getContext('2d').drawImage(video, 0, 0);
-
-    const colorName = el('colorSelect').value;
-    const regions = findColoredRegions(frame, colorName, 1);
-    if (regions.length) {
-      liveHitStreak++;
-      setGuideState('hit');
-
-      // Kick off a live reading preview, throttled to one in flight at a
-      // time (Tesseract calls take a few hundred ms to ~1.5s, far slower
-      // than the 180ms poll interval) so it updates as fast as it can
-      // without piling up overlapping OCR calls.
-      if (!livePreviewBusy) {
-        livePreviewBusy = true;
-        const crop = cropToCanvas(frame, regions[0]);
-        quickOcrPreview(crop).then(text => {
-          if (text) showLiveMarkBadge(text); else hideLiveMarkBadge();
-          livePreviewBusy = false;
-        });
+  // requestVideoFrameCallback fires in sync with each frame the browser
+  // actually decodes/paints for the <video> element — a much better fit
+  // than polling on a plain setInterval, which runs on the wall clock
+  // and can wake up between frames (or drift) for no benefit. We still
+  // throttle the expensive work (colour scan + OCR) to roughly
+  // LIVE_CHECK_INTERVAL_MS, since running full detection on every single
+  // decoded frame (~30-60/sec) would be wasteful; rVFC just gives us a
+  // more accurate, battery-friendlier clock to throttle against.
+  // Falls back to setInterval on browsers that don't support it (e.g.
+  // Firefox, older Safari) — same detection logic either way.
+  if (video && typeof video.requestVideoFrameCallback === 'function') {
+    const onFrame = async () => {
+      if (!liveDetectRvfcHandleActive) return;
+      const now = performance.now();
+      if (now - liveDetectLastRun >= LIVE_CHECK_INTERVAL_MS) {
+        liveDetectLastRun = now;
+        await runLiveDetectionCheck();
       }
-
-      if (liveHitStreak >= LIVE_STABLE_HITS) {
-        liveHitStreak = 0;
-        await performCapture(frame);
+      if (liveDetectRvfcHandleActive) {
+        liveDetectRvfcHandle = video.requestVideoFrameCallback(onFrame);
       }
-    } else {
-      liveHitStreak = 0;
-      setGuideState('idle');
-      hideLiveMarkBadge();
-    }
-  }, LIVE_CHECK_INTERVAL_MS);
+    };
+    liveDetectRvfcHandleActive = true;
+    liveDetectRvfcHandle = video.requestVideoFrameCallback(onFrame);
+  } else {
+    liveDetectTimer = setInterval(runLiveDetectionCheck, LIVE_CHECK_INTERVAL_MS);
+  }
 }
 
 async function startCamera() {
